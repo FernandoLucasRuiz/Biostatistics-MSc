@@ -1,0 +1,322 @@
+---
+title: "Tarea Análisis de Modelos Estadísticos de Comparación y de Predicción"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r, echo=F, warning=F}
+setwd("/Users/fernandolucasruiz/Library/CloudStorage/OneDrive-UNIVERSIDADDEMURCIA/Documentos/Fernando/Master Bioinformatica/Asignaturas/Bioestadistica")
+```
+
+# Introducción
+
+Esta tarea se enfoca en explorar la relación entre el uso de rayos X y la incidencia de leucemia mieloide aguda (AML) en la población infantil, utilizando los datos disponibles en la biblioteca R denominados "amlxray". Las variables analizadas abarcan diversos aspectos, como la edad, el sexo, la presencia del síndrome de Down, la exposición a rayos X durante el embarazo y la cantidad de radiografías realizadas.
+
+El objetivo principal de este análisis es comprender la influencia de diversos factores de riesgo en la aparición de la leucemia mieloide aguda en la población infantil.
+
+# Librerias utilizadas
+
+```{r, message=F, warning=FALSE}
+library("tidyverse") #para manejar datos
+library("rms") #para el modelado
+library("ResourceSelection") #para evaluar modelosE
+library("Epi") # para hacer curvas roc
+library("caret") # para matriz de confusion
+library("pROC") # para realizar y analizar curvas ROC
+library("patchwork") #para unir gráfica
+```
+
+# Directorio de trabajo y carga de datos
+
+En primer lugar, cargamos los datos de la libreria faraway
+
+```{r, message=F}
+library(faraway)
+data(amlxray)
+```
+
+Analizamos la estructura de los datos para obtener una visión general. Observamos que la mayoría de las variables son de tipo factor, con las excepciones de age y disease. Además, identificamos un factor adicional denominado CnRay, que representa la cantidad de exposiciones a rayos X.
+
+```{r}
+data <- amlxray
+str(data)
+```
+
+Procederé a categorizar la variable "disease" como "control" y "case". Asimismo, llevaré a cabo una reestructuración de la variable CnRay.
+
+```{r}
+data$disease <- factor(data$disease, labels = c("control", "case"))
+data$CnRay <- data$CnRay %>%
+  as.numeric() %>%
+  factor(labels = c("none", "1 or 2", "3 or 4", ">= 5"))
+str(data)
+```
+
+Voy a examinar los datos utilizando la función "describe". Contamos con 11 variables y 238 observaciones, sin valores faltantes. Aunque la visualización gráfica más detallada se realizará posteriormente, ya se puede observar que algunas variables presentan una significativa disparidad en el número de niveles.
+
+```{r}
+describe(data)
+```
+
+Vemos que en nuestros datos hay cerca del 50% de datos control y con la enfermedad.
+
+```{r}
+colores_discretos <- c("#66c2a5", "#fc8d62", "#8da0cb", "#b3b3b1", "#a6d854", "#ffd92f", "#e5c494", "#e78ac3")
+
+ggplot(data, aes(x = "", fill = disease)) +
+  geom_bar(position = "fill") +
+  labs(title = "Conteo Disease",
+       x = "Disease",
+       y = "Percent") +
+  theme_minimal() +
+  scale_fill_manual(values = colores_discretos)+
+  guides(fill = guide_legend(title = "Value"))
+```
+
+Observamos en los gráficos de las variables categóricas que downs, Mray, MupRay y MlowRay muestran una proporción reducida de individuos que exhiben esas características.
+
+```{r, warning=F}
+combined_data_long <- reshape2::melt(data[,-5], id.vars = c("ID", "disease"))
+
+orden_categorias <- c("F", "M", "yes", "no", "none", "1 or 2", "3 or 4", ">= 5")
+
+combined_data_long$value <- factor(combined_data_long$value, levels = orden_categorias)
+
+
+ggplot(combined_data_long, aes(x = variable, fill = value)) +
+  geom_bar(position = "fill") +
+  facet_wrap(~variable, scales = "free") +
+  labs(title = "Conteo Variables",
+       x = "",
+       y = "Conteo") +
+  theme_minimal() +
+  scale_fill_manual(values = colores_discretos)+
+  guides(fill = guide_legend(title = "Value"))
+
+```
+
+Al segmentar las variables entre los grupos de control y caso, se evidencia que los posibles factores que podrían contribuir a la enfermedad son Fray, Cray y CnRay, dado que es donde se observa la mayor disparidad entre los grupos de control y caso.
+
+```{r}
+bar <- ggplot(combined_data_long, aes(x = disease, fill = value)) +
+  geom_bar(position = "fill") +
+  facet_wrap(~variable, scales = "free") +
+  labs(title = "Comparación de Factores por Enfermedad",
+       x = "",
+       y = "Conteo") +
+  theme_minimal() +
+  scale_fill_manual(values = colores_discretos)+
+  guides(fill = guide_legend(title = "Value"))
+
+bar
+```
+
+En relación con la variable downs, se observa que todos los individuos con síndrome de Down presentan la enfermedad AML. Es crucial considerar esta variable para su inclusión o exclusión en el modelo, ya que su asociación parece ser significativa.
+
+Por otro lado, la variable MupRay también requiere atención, ya que hay más casos de control que se sometieron a radiografías en la parte superior en comparación con los casos. Esta observación resulta contradictoria, ya que someterse a radiografías siempre se considera un factor de riesgo y no puede ser un factor de curación o prevención de la enfermedad. Aunque se incluirá en el modelo para esta práctica, se debe considerar la posibilidad de excluir esta variable en análisis más detallados.
+
+```{r}
+tab <- table(data$disease, data$downs)
+colnames(tab) <- c("Non-syndromic", "Down syndrome")
+tab
+tab <- table(data$disease, data$MupRay)
+colnames(tab) <- c("Non-MupRay", "MupRay")
+tab
+
+```
+
+Procedemos a examinar la única variable cuantitativa, que es la edad (age). Observamos que no hay una marcada diferencia entre los individuos de control y aquellos con la enfermedad. Por lo tanto, asumimos que la edad no parece ser un factor de riesgo significativo en este contexto.
+
+```{r}
+dens <- ggplot(data, aes(x = age, fill = disease, color = disease)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Distribución de Edad por Enfermedad",
+       x = "Edad",
+       y = "Densidad") +
+  scale_fill_manual(values = c("#66c2a5", "#fc8d62")) +
+  scale_color_manual(values = c("#66c2a5", "#fc8d62")) +
+  theme_minimal()
+
+dens
+```
+
+# Modelo de regresión logistica
+
+Realizo la creación de dos modelos con el objetivo de seleccionar las variables más apropiadas para el modelo final. En este proceso, inicio con un modelo vacío que solo incluye la variable de respuesta "disease". Posteriormente, establezco un modelo que abarca todas las variables disponibles. Luego, tomo decisiones respecto a la inclusión o exclusión de variables a partir del modelo total, eliminando una variable a la vez según su valor en el modelo.
+
+En este contexto, observo que la variable "Cray" se elimina temprano en el proceso. Esta decisión se debe a que "Cray" y "CnRay" son variables redundantes, ya que en "CnRay" existe un valor "none" que es equivalente a "no" en "Cray".
+
+La fórmula seleccionada para el modelo final es "disease \~ downs + MupRay + Fray + CnRay".
+
+```{r}
+modelo0 <- glm(disease ~ 1, data = data[,-1], family = binomial)
+modeloTotal <- glm(disease ~ Sex + downs + age + Mray + MupRay + MlowRay + Fray + 
+    Cray + CnRay, data = data, family = binomial)
+
+step(modeloTotal, scope = list(lower = modelo0, uppers = modeloTotal), direction = "backward")
+```
+
+# Validez del modelo
+
+Cuando comparamos el modelo que incluye todas las variables con el modelo final, se observan diferencias notables. En el caso del modelo total, las variables "CrayYes" y "CnRay1or2" son las que muestran valores de p significativos. En cambio, en el modelo final, las variables relacionadas con la exposición a rayos X del individuo se vuelven más significativas de manera individual a medida que aumenta la exposición. Es interesante destacar que la variable "downs" presenta un estimate muy alto y una desviación estándar considerable en el modelo final, debido a que todos los individuos con síndrome de Down tienen la enfermedad.
+
+Como era de esperar, la variable "MupRay" muestra un estimate negativo en el modelo final, ya que hay más casos positivos de "MupRay" en los controles y menos casos positivos de "MupRay" en los casos con enfermedad.
+
+Aunque ambos modelos tienen valores de AIC muy similares (314.76 y 309.96), se observa una ligera mejora en el AIC del modelo final, lo que sugiere una mayor eficacia en la representación de los datos.
+
+```{r}
+modeloFinal <- glm(formula = disease ~ downs + MupRay + Fray + CnRay, family = binomial, data = data)
+
+summary(modeloTotal)
+summary(modeloFinal)
+```
+
+Realizamos un test de análisis de varianza (ANOVA) con test=Chisq para evaluar la importancia de cada variable en el modelo. Observamos que, en ambos modelos, la variable "downs" es la que más contribuye al modelo, con un nivel de significancia (Pr (\>Chi)) muy pequeño, seguida de cerca por "MupRay" y "CnRay". La variable "Fray" no resulta significativa en ninguno de los casos, pero al retirarla del modelo (datos no mostrados), se evidencia una pérdida de calidad en el modelo, ya que el AIC aumenta.
+
+Al comparar estadísticamente ambos modelos, no encontramos diferencias significativas entre ellos. Esto sugiere que ambos modelos tienen un rendimiento similar en términos de ajuste a los datos.
+
+```{r}
+anova(modeloTotal, test = "Chisq")
+anova(modeloFinal, test = "Chisq")
+anova(modeloTotal,modeloFinal, test = "Chisq")
+```
+
+En ambos modelos, los intervalos de confianza para los casos con p-valor significativo no incluyen el valor 0. Es interesante destacar que el intervalo de confianza para la variable "downs" es infinito, ya que todos los individuos con síndrome de Down presentan la enfermedad. Esto indica una fuerte asociación entre la presencia de síndrome de Down y la incidencia de la enfermedad, lo cual es consistente con el análisis realizado.
+
+```{r, warning=F}
+confint(modeloTotal)
+confint(modeloFinal)
+```
+
+El resultado del test de bondad de ajuste de Hosmer-Lemeshow indica si existe una diferencia significativa entre las frecuencias observadas y las esperadas según el modelo.
+
+La prueba revela un estadístico de chi-cuadrado significativamente alto y un p-valor prácticamente nulo, lo que sugiere una discrepancia significativa entre las frecuencias observadas y las esperadas. Esto señala que ambos modelos no se ajustan adecuadamente a los datos observados.
+
+```{r, warning=F}
+hoslem.test(data$disease, modeloTotal$fitted.values)
+hoslem.test(data$disease, modeloFinal$fitted.values)
+
+```
+
+El punto de corte adecuado en un modelo de clasificación binaria desempeña un papel crucial en equilibrar la sensibilidad y la especificidad, y puede ajustarse según los requisitos específicos del problema. Este ajuste es esencial para lograr una discriminación precisa y elegir la variable de salida correcta.
+
+Al observar las curvas ROC, se identifican los puntos de corte óptimos para el ModeloTotal y el modeloFinal, que son 0.513 y 0.446, respectivamente. Estos valores determinan el umbral de decisión que maximiza el rendimiento del modelo en términos de sensibilidad y especificidad.
+
+```{r, warning=F}
+curvaROC_T <- ROC(form= disease ~  Sex + downs + age + Mray + MupRay + MlowRay + Fray + Cray + CnRay, data = data, plot = "ROC", MX = T, PS = T, MI = F)
+curvaROC_F <- ROC(form= disease ~ downs + MupRay + CnRay + Fray , data = data, plot = "ROC", MX = T, PS = T, MI = F)
+
+curvaROC_F$res$lr.eta[curvaROC_F$res$lr.eta == -Inf] <- 0
+
+```
+
+En las siguientes gráficas, se presentan los puntos de corte que equilibran la especificidad y la sensibilidad en ambos modelos. Estos puntos son críticos para determinar el rendimiento óptimo del modelo en la clasificación binaria, asegurando un equilibrio adecuado entre la capacidad de identificar positivos verdaderos y la capacidad de evitar falsos positivos.
+
+```{r}
+modeloTsens <- curvaROC_T$res$sens
+modeloTespec <- curvaROC_T$res$spec
+modeloTpcortes <- curvaROC_T$res$lr.eta
+modeloFsens <- curvaROC_F$res$sens
+modeloFespec <- curvaROC_F$res$spec
+modeloFpcortes <- curvaROC_F$res$lr.eta
+
+par(mfrow=c(1,2))  # Divide la ventana gráfica en dos columnas
+plot(modeloTpcortes, modeloTsens, type="l", xlab="Puntos de corte", ylab=" ", col = "#fc8d62", xlim = c(0,0.7), main="Curvas de S y E Modelo Total")
+par(new=TRUE)
+plot(modeloTpcortes, modeloTespec, type="l", xlab="", col= "#66c2a5", ylab=" ", xlim = c(0,0.7))
+legend("bottomright", legend = c("Sensitiviy", "Specificity"), col = c("#66c2a5", "#fc8d62"), lwd = 2)
+
+plot(modeloFpcortes, modeloFsens, type="l", xlab="Puntos de corte", ylab=" ", col = "#fc8d62", xlim = c(0, 0.8), main="Curvas de S y E Modelo Final")
+par(new=TRUE)
+plot(modeloFpcortes, modeloFespec, type="l", xlab="", col= "#66c2a5", ylab=" ", xlim = c(0, 0.8))
+legend("bottomright", legend = c("Sensitiviy", "Specificity"), col = c("#66c2a5", "#fc8d62"), lwd = 2)
+```
+
+A continuación, se presenta la matriz de confusión para ambos modelos, considerando los puntos de corte previamente analizados para equilibrar la especificidad y la sensibilidad.
+
+Ambos modelos exhiben un rendimiento similar en términos de precisión (0.66 y 0.63), pero el Modelo Final muestra un ligero aumento en este aspecto, aunque ambos son considerablemente deficientes. El Modelo Total presenta una mayor sensibilidad, capturando más casos positivos, pero a expensas de una especificidad más baja, es decir, identifica menos casos negativos correctamente.
+
+Aunque los valores kappa son positivos, lo que indica concordancia entre las predicciones del modelo y las categorías reales, están cercanos a 0. Esto sugiere que la capacidad predictiva de ambos modelos es moderada y puede haber coincidencias entre las predicciones y los datos reales al azar.
+
+```{r}
+fitted_valuesT <- ifelse(modeloTotal$fitted.values > 0.513, 1, 0)
+confusion_matrixT <- confusionMatrix(factor(fitted_valuesT), factor(data$disease, labels = c(0, 1)))
+print(confusion_matrixT)
+
+fitted_valuesF <- ifelse(modeloFinal$fitted.values > 0.446, 1, 0)
+confusion_matrixF <- confusionMatrix(factor(fitted_valuesF), factor(data$disease, labels = c(0, 1)))
+print(confusion_matrixF)
+
+```
+
+El análisis de las Matrices de Confusión revela que el Modelo Final presenta más errores, especialmente falsos negativos, en comparación con el Modelo Total. No obstante, ambos modelos muestran similitudes en la precisión de la predicción de casos verdaderos, aunque con ligeras variaciones.
+
+```{r}
+table <- data.frame(confusion_matrixT$table)
+
+table$Reference <- ifelse(table$Reference == 0, "control", "case")
+table$Prediction <- ifelse(table$Prediction == 0, "control", "case")
+
+table$Reference <- factor(table$Reference, levels = c("control", "case"))
+
+plotTable <- table %>%
+  mutate(predict = ifelse(table$Prediction == table$Reference, "correct", "incorrect")) %>%
+  group_by(Reference) %>%
+  mutate(prop = Freq/sum(Freq))
+
+plot1 <- ggplot(data = plotTable, mapping = aes(x = Reference, y = Prediction, fill = predict, alpha = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), vjust = 0.5, fontface = "bold", alpha = 1) +
+  scale_fill_manual(values = c(correct = "#4CAF50", incorrect = "#FF5252")) +
+  theme_bw() +
+  ggtitle("CM ModeloTotal") +
+  theme(legend.position = "none") 
+
+
+
+table <- data.frame(confusion_matrixF$table)
+
+table$Reference <- ifelse(table$Reference == 0, "control", "case")
+table$Prediction <- ifelse(table$Prediction == 0, "control", "case")
+
+table$Reference <- factor(table$Reference, levels = c("control", "case"))
+
+plotTable <- table %>%
+  mutate(predict = ifelse(table$Prediction == table$Reference, "correct", "incorrect")) %>%
+  group_by(Reference) %>%
+  mutate(prop = Freq/sum(Freq))
+
+plot2 <- ggplot(data = plotTable, mapping = aes(x = Reference, y = Prediction, fill = predict, alpha = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), vjust = 0.5, fontface = "bold", alpha = 1) +
+  scale_fill_manual(values = c(correct = "#4CAF50", incorrect = "#FF5252")) +
+  theme_bw() +
+  ggtitle("CM ModeloFinal") +
+  theme(axis.title.y = element_blank()) 
+
+plot1+plot2
+```
+
+Se analizó el área bajo la curva (AUC) de ambos modelos y se observó que ambos presentan valores muy similares. Sin embargo, es importante destacar que ambos modelos exhiben un rendimiento modesto en términos de predicción, indicando que su capacidad predictiva no es robusta.
+
+```{r, message=F}
+rocTotal <- roc(data$disease, modeloTotal$fitted.values)
+rocFinal <- roc(data$disease, modeloFinal$fitted.values)
+
+par(pty = "s")
+plot.roc(rocTotal, col = "#66c2a5", main = "Curva ROC - Modelos Total y Final", print.auc = T, print.auc.y = 0.6, print.auc.x = 0.5)
+plot.roc(rocFinal, col = "#fc8d62", add = TRUE, print.auc = T)
+legend("bottomright", legend = c("Modelo Total", "Modelo Final"),
+       col = c("#66c2a5", "#fc8d62"), lwd = 2)
+```
+
+# Conclusiones del análisis
+
+En este estudio, hemos comparado dos modelos de regresión logística para predecir la variable "disease" en los datos de amlxray. Los modelos evaluados incluyeron uno con todas las variables y otro ajustado con las variables que mostraron mayor contribución al modelo.
+
+En términos generales, podemos concluir que ambos modelos no son efectivos para la predicción, ya que el Test Hosmer and Lemeshow no respalda ninguno de los dos, el índice kappa de la matriz de confusión es bajo y el área bajo la curva no es significativamente amplia. Además, ambos modelos presentan considerables errores en la predicción.
+
+En cuanto a las variables con mayor impacto en el modelo, que podrían ser consideradas como factores de riesgo para la enfermedad AML, se observa que la presencia del síndrome de Down, la exposición materna a rayos X en la parte superior del cuerpo durante el embarazo, la exposición paterna a rayos X, y la cantidad de exposiciones del individuo a rayos X, están asociadas con un mayor riesgo de padecer la enfermedad.
+
+Finalmente, es importante señalar que la variable "MupRay" podría considerarse para su exclusión del modelo, ya que resulta contradictoria al ser un factor de riesgo y no tiene sentido que haya más casos control que casos de enfermedad asociados a esta variable.
