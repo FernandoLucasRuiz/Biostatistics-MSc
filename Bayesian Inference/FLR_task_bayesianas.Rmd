@@ -1,0 +1,521 @@
+---
+title: "Inferencia Bayesiana"
+output: html_notebook
+author: "Fernando Lucas Ruiz"
+---
+
+# Introducción
+
+En este estudio llevado a cabo en el Baystate Medical Center en Springfield, Massachusetts, se busca identificar los factores asociados con el riesgo de tener un bebé con bajo peso al nacer (menos de 2500 gramos). Los datos recopilados provienen de 189 mujeres embarazadas, de las cuales 59 tuvieron un bebé con bajo peso al nacer. La base de datos "Lowbirthweight" incluye variables como el indicador de bajo peso al nacer (LOW), edad de la madre en grupos (age5c), hábito de fumar durante el embarazo (smoke), indicador de partos previos (ptl), raza de la madre (race), e irritabilidad del útero (ui).
+
+Para abordar este estudio, se utiliza un modelo de regresión logística que explica la probabilidad de bajo peso al nacer en función de las variables categóricas age5c, smoke, ptl, race y ui. El modelo está definido como una variable de Bernoulli, donde los parámetros incluyen coeficientes de regresión (β), términos de interacción (γ, δ, ϕ, ω) y un intercepto (α). Se utiliza una distribución a priori uniforme para los parámetros.
+
+Se realizará una inferencia bayesiana con 50,000 simulaciones con tres cadenas, un periodo de quemado de 5,000 simulaciones y un thin de 10.
+
+# Librerias utilizadas
+
+```{r, warning=FALSE, message=F}
+library("readxl")
+library("tidyverse")
+library("Hmisc") #para describir los data
+library("R2WinBUGS")
+library("patchwork")
+```
+
+# Lectura y limpieza de datos
+
+-   Cargamos los datos del documento excel. Vemos que todas las variables son numericas por lo que hay factorizarlas. Tambien convertimos el tibble en un data.frame para su manejo.
+
+```{r}
+str(data)
+data <- data.frame(data)
+```
+
+-   Le ponemos los labels a los factores según su significado previo
+
+```{r}
+data$LOW <-  factor(data$LOW, labels = c("normopeso", "bajo peso"))
+data$smoke <- factor(data$smoke, labels = c("no", "si"))
+data$age5c <- factor(data$age5c, labels = c("<=18", "(18,20]", "(20, 25]", "(25,30]", "(> 30)"))
+data$ptl <- factor(data$ptl, labels = c("no", "si"))
+data$race <- factor(data$race, labels = c("blanca", "negra", "otra"))
+data$ui <- factor(data$ui, labels = c("no", "si"))
+
+str(data)
+```
+
+-   Observamos los datos los valores de LOW estan descompensados a favor del valor "no" con un 68.8% de los casos. El rango de edad con más individuos es de 20 a 25. Las variables más descompensadas son ptl y ui con un 85% de los casos con "no". La raza más presente en los datos es la raza blanca.
+
+```{r}
+describe(data)
+```
+
+-   A continuación, se ven unas gráficas de barras mostrando los datos anteriores para una mejor visualización.
+
+```{r}
+colores_discretos <- c("#66c2a5", "#fc8d62", "#8da0cb", "#b3b3b1", "#a6d854", "#ffd92f", "#e5c494", "#e78ac3", "#7570b3", "#d95f02")
+
+
+ggplot(data, aes(x = "", fill = LOW)) +
+  geom_bar(position = "fill") +
+  labs(title = "LOW",
+       x = "Disease",
+       y = "Percent") +
+  theme_minimal() +
+  scale_fill_manual(values = colores_discretos)+
+  guides(fill = guide_legend(title = "Value"))
+```
+
+```{r, warning=FALSE}
+combined_data_long <- reshape2::melt(data, id.vars = "LOW")
+
+orden_categorias <- c("no", "si", "<=18", "(18,20]", "(20, 25]", "(25,30]", "(> 30)", "blanca", "negra", "otra")
+
+combined_data_long$value <- factor(combined_data_long$value, levels = orden_categorias)
+
+
+ggplot(combined_data_long, aes(x = variable, fill = value)) +
+  geom_bar(position = "fill") +
+  facet_wrap(~variable, scales = "free") +
+  labs(title = "Variables",
+       x = "",
+       y = "Conteo") +
+  theme_minimal() +
+  scale_fill_manual(values = colores_discretos)+
+  guides(fill = guide_legend(title = "Value"))
+
+```
+
+-   En esta gráfica mostramos los variables según si tienen bajo peso al nacer o normopeso. En general , todas las variables parecen ser factores de riesgo porque aumenta el porcentaje en los casos con bajo peso al nacer.
+
+```{r}
+bar <- ggplot(combined_data_long, aes(x = LOW, fill = value)) +
+  geom_bar(position = "fill") +
+  facet_wrap(~variable, scales = "free") +
+  labs(title = "Comparación de Factores por Enfermedad",
+       x = "",
+       y = "Conteo") +
+  theme_minimal() +
+  scale_fill_manual(values = colores_discretos)+
+  guides(fill = guide_legend(title = "Value"))
+
+bar
+```
+
+-   Hacemos ahora un modelo de regresion logistica clásica con la variable de salida LOW con todas las variables restantes.
+
+```{r}
+modelo <- glm(LOW ~ ., data = data, family = binomial)
+summary(modelo)
+```
+
+Las variables significativas (aquellas con asteriscos) son fumar durante el embarazo (**`smokesi`**), tener partos previos (**`ptlsi`**), raza negra (**`racenegra`**), raza otra (**`raceotra`**), indicando que estas variables están asociadas de manera significativa con el riesgo de bajo peso al nacer. El AIC más bajo sugiere que este modelo es una buena elección en términos de ajuste. La devianza residual indica que el modelo explica bien la variabilidad en los datos.
+
+# Inferencia bayesiana
+
+-   Hacer inferencia bayesiana después de un modelo de regresión logística puede ser interesante por varias razones:
+
+    -   **Flexibilidad en la Estimación de Parámetros:** La regresión logística clásica se basa en estimaciones de máxima verosimilitud, que pueden ser sensibles a valores atípicos o datos escasos. La inferencia bayesiana permite incorporar información previa (conocimientos expertos, estudios anteriores, etc.) a través de distribuciones previas, brindando mayor flexibilidad en la estimación de parámetros.
+    -   **Incertidumbre y Precisión:** Mientras que la regresión logística proporciona estimaciones puntuales de los parámetros, la inferencia bayesiana genera distribuciones de probabilidad para estos parámetros. Esto permite evaluar la incertidumbre asociada a las estimaciones y obtener intervalos de credibilidad, ofreciendo una visión más completa de la variabilidad en los resultados.
+    -   **Comparación de Modelos:** La inferencia bayesiana facilita la comparación directa de modelos mediante el cálculo de la evidencia bayesiana. Esto ayuda en la selección del mejor modelo entre diferentes alternativas, permitiendo evaluar cuál modelo se ajusta mejor a los datos observados.
+    -   **Flexibilidad en la Incorporación de Información:** Si se cuenta con información previa sobre los parámetros del modelo, la inferencia bayesiana permite incorporar esta información de manera sistemática. Esto es especialmente útil en situaciones donde se dispone de conocimientos expertos o estudios previos que pueden enriquecer la inferencia.
+    -   **Manejo de Muestras Pequeñas:** En situaciones donde se tienen conjuntos de datos pequeños, la inferencia bayesiana puede proporcionar estimaciones más estables al aprovechar la información previa disponible.
+
+-   En resumen, la inferencia bayesiana complementa la regresión logística clásica al proporcionar una perspectiva más completa, permitiendo una mayor flexibilidad en la modelización y evaluación de la incertidumbre asociada a las estimaciones.
+
+-   Preparamos y cargamos los datos, las iniciales, la dirección del modelo y el directorio de Winbugs para preparar la función de bugs().\
+    En relación con el modelo que vamos a implementar, el código establece un modelo bayesiano para llevar a cabo una regresión logística. Este define las distribuciones a priori para los parámetros y procede a calcular los odds ratios y las probabilidades predichas correspondientes a cada categoría de las variables predictoras en relación con la variable de respuesta, LOW.
+
+    Para obtener los resultados finales, hemos realizado 50,000 simulaciones, utilizando 3 cadenas, con un período de quemado de 5,000 simulaciones y aplicando un thinning de 10.
+
+```{r}
+
+datosWB <- list(LOW=as.numeric(data$LOW)-1,age5c=as.numeric(data$age5c),smoke=as.numeric(data$smoke), ptl=as.numeric(data$ptl), race=as.numeric(data$race), ui=as.numeric(data$ui),n=length(data$LOW))
+
+
+iniciales <- function(){
+list(alpha=rnorm(1,0,1),beta=c(NA,rnorm(4,0,1)),
+gamma=c(NA,rnorm(1,0,1)),delta=c(NA,rnorm(1,0,1)),
+phi=c(NA,rnorm(2,0,1)),omega=c(NA,rnorm(1,0,1)))
+}
+
+
+model <- "C:/Users/FENIX/Desktop/Fernando/modelo2.txt"
+
+
+directorio.winbugs <- "P:/WinBUGS14"
+```
+
+### 1. Calcular la media a posteriori y un IC95% para los parámetros α, β2, β3, β4, β5, γ2, δ2, ϕ2, ϕ3, y ω2.
+
+```{r}
+resultado <- bugs(data = datosWB, inits = iniciales, model.file = model, parameters.to.save = c("alpha", "beta", "gamma", "delta", "phi", "omega"), n.iter = 50000, n.burnin = 5000, n.thin = 10, n.chain = 3, bugs.directory = directorio.winbugs, DIC = FALSE)
+
+resultado$summary
+```
+
+-   **Parámetro** α:
+
+    -   Media a posteriori: -2.024.
+
+    -   IC95%: -3.098 hasta -0.999 --\> *Estatisticamente significatica*
+
+-   **Parámetro** β2**:**
+
+    -   Media a posteriori: -0.200
+
+    -   IC95%: -1.324 hasta 0.919
+
+-   **Parámetro** β3:
+
+    -   Media a posteriori: 0.087
+
+    -   IC95%: -0.864 hasta 1.081
+
+-   **Parámetro** β4:
+
+    -   Media a posteriori: -0.237
+
+    -   IC95%: -1.414 hasta 0.911
+
+-   **Parámetro** β5**:**
+
+    -   Media a posteriori: -1.205
+
+    -   IC95%: -2.983 hasta 0.354
+
+-   **Parámetro** γ2**:**
+
+    -   Media a posteriori: 1.019
+
+    -   IC95%: 0.232 hasta 1.829 --\> *estadisticamente significativo*
+
+-   **Parámetro** δ2**:**
+
+    -   Media a posteriori: 1.311
+
+    -   IC95%: 0.390 hasta 2.243 --\> *estadisticamente significativo*
+
+-   **Parámetro** ϕ2**:**
+
+    -   Media a posteriori: 1.108
+
+    -   IC95%: 0.084 hasta 2.126 --\> *estadisticamente significativo*
+
+-   **Parámetro** ϕ3**:**
+
+    -   Media a posteriori: 1.002
+
+    -   IC95%: 0.163 hasta 1.875 --\> *estadisticamente significativo*
+
+-   **Parámetro** ω2**:**
+
+    -   Media a posteriori: 0.720
+
+    -   IC95%: -0.237 hasta 1.667
+
+```{r}
+p <- function(alpha_mean, sd, alpha_lower, alpha_upper, letra){
+  alpha_plot <- ggplot() +
+    geom_density(aes(x = rnorm(10000, alpha_mean, sd)), fill = "#fc8d62", alpha = 0.5, color = "black") +
+    geom_vline(xintercept = c(alpha_lower, alpha_upper), linetype = "dashed", color = "#66c2a5", linewidth = 1.2) +
+    annotate("text", x = alpha_mean, y = 0.5, label = paste("Media:", round(alpha_mean, 3)), vjust = -0.5, size = 4, color = "black") +
+    annotate("text", x = alpha_lower -0.5, y = 0.15, label = paste(round(alpha_lower, 3)), vjust = -0.5, size = 3) +
+    annotate("text", x = alpha_upper + 0.5, y = 0.15, label = paste(round(alpha_upper, 3)), vjust = -0.5, size = 3) +
+    labs(title = paste("Distribución a Posteriori de ", letra),
+         x = "",
+         y = "Densidad") +
+    theme_minimal()
+}
+
+r <- resultado$summary
+par(mfrow = c(3,2))
+n <- 1
+p1 <- p(r[n,1], r[n,2],r[n,3], r[n,7], "α") 
+n <- n+1
+p2 <-p(r[n,1], r[n,2],r[n,3], r[n,7], "β2")
+n <- n+1
+p3 <-p(r[n,1], r[n,2],r[n,3], r[n,7], "β3") 
+n <- n+1
+p1+ p2 + p3
+p1 <- p(r[n,1], r[n,2],r[n,3], r[n,7], "β4") 
+n <- n+1
+p2 <- p(r[n,1], r[n,2],r[n,3], r[n,7], "β5") 
+n <- n+1
+p3 <- p(r[n,1], r[n,2],r[n,3], r[n,7], "γ2") 
+n <- n+1
+p1+ p2 + p3
+p1 <- p(r[n,1], r[n,2],r[n,3], r[n,7], "δ2") 
+n <- n+1
+p2 <- p(r[n,1], r[n,2],r[n,3], r[n,7], "ϕ2") 
+n <- n+1
+p1+ p2
+p3 <- p(r[n,1], r[n,2],r[n,3], r[n,7], "ϕ3")
+n <- n+1
+p4 <- p(r[n,1], r[n,2],r[n,3], r[n,7], "ω2")
+p3+ p4
+```
+
+### 2. Valorar la convergencia obteniendo las autocorrelaciones para esos parámetros, así como el Rhat y el n.eff
+
+```{r}
+resultado <- bugs(data = datosWB, inits = iniciales, model.file = model, parameters.to.save = c("alpha", "beta", "gamma", "delta", "phi", "omega"), n.iter = 50000, n.burnin = 5000, n.thin = 10, n.chain = 3, bugs.directory = directorio.winbugs, DIC = FALSE)
+
+resultado$summary
+```
+
+-   **Parámetro** α:
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 7200 --\> *muestra efectiva*
+
+-   **Parámetro** β2**:**
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 14000 --\> *muestra efectiva*
+
+-   **Parámetro** β3:
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 9500 --\> *muestra efectiva*
+
+-   **Parámetro** β4:
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 14000 --\> *muestra efectiva*
+
+-   **Parámetro** β5**:**
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 4500 --\> *muestra efectiva*
+
+-   **Parámetro** γ2**:**
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 14000 --\> *muestra efectiva*
+
+-   **Parámetro** δ2**:**
+
+    -   Rhat: 1.001 --\> c*onvergencia adecuada*
+
+    -   n.eff: 14000 --\> *muestra efectiva*
+
+-   **Parámetro** ϕ2**:**
+
+    -   Rhat: 1.001 \--\> *convergencia adecuada*
+
+    -   n.eff: 14000 --\> *muestra efectiva*
+
+-   **Parámetro** ϕ3**:**
+
+    -   IC95%: 0.163 hasta 1.875 --\> *estadisticamente significativo*
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 14000 --\> *muestra efectiva*
+
+-   **Parámetro** ω2**:**
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 14000 --\> *muestra efectiva*
+
+Todas tienen una convergencia adecuada porque están cercanas a 1.
+
+Respecto a la eficiencia casi todas tienen una n.eff muy alta (14,000). α, β3 y β5 lo tienen un poco más bajo pero sigue siendo muy alta.
+
+```{r}
+
+p <- function(muestra){
+  autocorr <- acf(muestra, lag.max = 50, plot = FALSE)
+  plot(autocorr$lag, autocorr$acf, type = "l", xlab = "Lag", ylab = "Autocorrelación",
+       col = "#fc8d62", lwd = 2)  
+  abline(h = 0, col = "gray", lty = 2)  # Línea horizontal en 0
+  abline(v = 0, col = "gray", lty = 2)  # Línea vertical en 0
+}
+
+par(mfrow = c(1,2))
+muestra <- resultado$sims.list$alpha
+p(muestra)
+title(main = "Autocorrelación α")
+
+muestra <- resultado$sims.list$beta[,1]
+p(muestra)
+title(main = "Autocorrelación β2")
+
+muestra <- resultado$sims.list$beta[,2]
+p(muestra)
+title(main = "Autocorrelación β3")
+
+muestra <- resultado$sims.list$beta[,3]
+p(muestra)
+title(main = "Autocorrelación β4")
+
+muestra <- resultado$sims.list$beta[,4]
+p(muestra)
+title(main = "Autocorrelación β5")
+
+muestra <- resultado$sims.list$gamma
+p(muestra)
+title(main = "Autocorrelación γ2")
+
+muestra <- resultado$sims.list$delta
+p(muestra)
+title(main = "Autocorrelación δ2")
+
+muestra <- resultado$sims.list$phi[,1]
+p(muestra)
+title(main = "Autocorrelación ϕ2")
+
+muestra <- resultado$sims.list$phi[,2]
+p(muestra)
+title(main = "Autocorrelación ϕ3")
+
+muestra <- resultado$sims.list$omega
+p(muestra)
+title(main = "Autocorrelación ω2")
+```
+
+-   Observamos que las autocorrelaciones de los parámetros se aproximan a cero. Una autocorrelación cercana a cero quiere decir que los puntos de datos son más independientes entre sí, lo cual indica que no hay una fuerte dependencia entre las observaciones separadas por un número específico de pasos de tiempo.
+
+### 3. Obtener la media a posteriori, el IC95% y la distribución a posteriori, para los odds ratio correspondientes a las categorías de la raza tomando como referencia la raza blanca: parámetros OR21 y OR31
+
+```{r}
+resultado2 <- bugs(data = datosWB, inits = iniciales, model.file = model, parameters.to.save = c("OR21", "OR31"), n.iter = 50000, n.burnin = 5000, n.thin = 10, n.chain = 3, bugs.directory = directorio.winbugs, DIC = FALSE)
+
+resultado2$summary
+```
+
+-   **Parámetro OR21:**
+
+    -   Media a posteriori: 3.471
+
+    -   IC95%: 1.087 hasta 8.381 --\> *estadisticamente significativo*
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 14000 --\> *muestra efectiva*
+
+-   **Parámetro OR31:**
+
+    -   Media a posteriori: 3.002
+
+    -   IC95%: 1.176 hasta 6.517 --\> *estadisticamente significativo*
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 14000 --\> *muestra efectiva*
+
+-   Ahora muestro las distribuciones a posteriori de ambos parámetros
+
+```{r}
+OR21_tohist <- resultado2$sims.array[,,"OR21"]
+OR31_tohist <- resultado2$sims.array[,,"OR31"]
+
+par(mfrow = c(1,2))
+hist(OR21_tohist, col = "#66c2a5", main = "Distribución OR21", ylab = "Frecuencia", xlab= "")
+par(new=T)
+plot(density(OR21_tohist), col = "#fc8d62", main = "", lwd = 2, yaxt = "n", xaxt = "n", ylab = "", xlab = "")
+
+hist(OR31_tohist, col = "#66c2a5", main = "Distribución OR31", ylab = "", xlab= "")
+par(new=T)
+plot(density(OR31_tohist), col = "#fc8d62", main = "", lwd = 2, yaxt = "n", xaxt = "n", ylab = "", xlab = "")
+```
+
+### 4. Obtener la media a posteriori, el IC95% y la distribución a posteriori, para los parámetros π1, π2, π3, π2/π1 y π3/π1.
+
+```{r}
+resultado3 <- bugs(data = datosWB, inits = iniciales, model.file = model, parameters.to.save = c("meanp1", "meanp2", "meanp3", "meanp2p1", "meanp3p1"), n.iter = 50000, n.burnin = 5000, n.thin = 10, n.chain = 3, bugs.directory = directorio.winbugs, DIC = FALSE)
+
+resultado3$summary
+```
+
+-   **Parámetro** π1**:**
+
+    -   Media a posteriori: 0.225
+
+    -   IC95%: 0.154 hasta 0.307 --\> *estadisticamente significativo*
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 8700 --\> *muestra efectiva*
+
+-   **Parámetro** π2**:**
+
+    -   Media a posteriori: 0.419
+
+    -   IC95%: 0.259 hasta 0.591 --\> *estadisticamente significativo*
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 14000 --\> *muestra efectiva*
+
+-   **Parámetro** π3**:**
+
+    -   Media a posteriori: 0.396
+
+    -   IC95%: 0.285 hasta 0.591 --\> *estadisticamente significativo*
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 14000 --\> *muestra efectiva*
+
+-   **Parámetro** π2/π1**:**
+
+    -   Media a posteriori: 1.921
+
+    -   IC95%: 1.052 hasta 3.119 --\> *estadisticamente significativo*
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 14000 --\> *muestra efectiva*
+
+-   **Parámetro** π3/π1**:**
+
+    -   Media a posteriori: 1.822
+
+    -   IC95%: 1.100 hasta 2.858 --\> *estadisticamente significativo*
+
+    -   Rhat: 1.001 --\> *convergencia adecuada*
+
+    -   n.eff: 14000 --\> *muestra efectiva*
+
+**π2/π1:** Un valor de 1.92 sugiere que las mujeres de raza negra tienen casi el doble de probabilidad de experimentar el evento en comparación con las mujeres blancas.
+
+**π3/π1:** Un valor de 1.82 indica que las mujeres de otra raza diferente a la blanca y negra tienen alrededor de 1.82 veces más probabilidad de experimentar el evento en comparación con las mujeres blancas.
+
+```{r}
+meanp1 <- resultado3$sims.array[,,"meanp1"]
+meanp2 <- resultado3$sims.array[,,"meanp2"]
+meanp3 <- resultado3$sims.array[,,"meanp3"]
+meanp2p1 <- resultado3$sims.array[,,"meanp2p1"]
+meanp3p1 <- resultado3$sims.array[,,"meanp3p1"]
+
+par(mfrow = c(2,3))
+
+hist(meanp1, col = "#66c2a5", main = "Distribución π1", ylab = "Frecuencia", xlab= "")
+par(new=T)
+plot(density(meanp1), col = "#fc8d62", main = "", lwd = 2, yaxt = "n", xaxt = "n", ylab = "", xlab = "")
+
+hist(meanp2, col = "#66c2a5", main = "Distribución π2", ylab = "", xlab= "")
+par(new=T)
+plot(density(meanp2), col = "#fc8d62", main = "", lwd = 2, yaxt = "n", xaxt = "n", ylab = "", xlab = "")
+
+hist(meanp3, col = "#66c2a5", main = "Distribución π3", ylab = "Frecuencia", xlab= "")
+par(new=T)
+plot(density(meanp3), col = "#fc8d62", main = "", lwd = 2, yaxt = "n", xaxt = "n", ylab = "", xlab = "")
+
+hist(meanp2p1, col = "#66c2a5", main = "Distribución π2/π1", ylab = "", xlab= "")
+par(new=T)
+plot(density(meanp2p1), col = "#fc8d62", main = "", lwd = 2, yaxt = "n", xaxt = "n", ylab = "", xlab = "")
+
+hist(meanp3p1, col = "#66c2a5", main = "Distribución π3/π1", ylab = "Frecuencia", xlab= "")
+par(new=T)
+plot(density(meanp3p1), col = "#fc8d62", main = "", lwd = 2, yaxt = "n", xaxt = "n", ylab = "", xlab = "")
+```
