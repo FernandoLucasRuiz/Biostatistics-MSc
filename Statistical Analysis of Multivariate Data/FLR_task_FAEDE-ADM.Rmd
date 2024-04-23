@@ -1,0 +1,590 @@
+---
+title: "Trabajo individual de FAEDE+AEDM"
+subtitle: "Master en Bioinformática, Universidad de Murcia"
+author: "Fernando Lucas Ruiz (fernando.lucas@um.es)"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    highlight: kate
+    number_sections: no
+    theme: spacelab
+    toc: yes
+    toc_float: yes
+---
+
+# Introducción
+
+Este ejercicio está centrado en la búsqueda de perfiles de expresión génica en un conjunto de datos de microarrays de GEO(NCBI) que consta de 124 observaciones divididas en dos grupos/clases:
+
+-   control (59) y
+
+-   autism (65).
+
+Las muestras de individuos autistas y de control se recogieron de personas de Phoenix. El grupo de cada observación se encuentra en el factor Class, **columna 201** del fichero pone_0187371_s002.csv.
+
+# Librerias utilizadas
+
+```{r, message=F}
+library(readr)
+library(psych)
+library(ggplot2)
+library(viridis)
+library(hrbrthemes)
+library(tidyverse)
+library(nortest)
+library(car)
+library(outliers)
+library(corrr)
+library(corrplot)
+library(REdaS)
+library(FactoMineR)
+library(nFactors)
+library(dendextend)
+library(gplots)
+library(RColorBrewer)
+library(factoextra)
+library(cluster)
+library(MASS)
+```
+
+# Directorio de trabajo y carga de datos
+
+En primer lugar, disponemos el directorio de trabajo para incorporar los datos del csv a nuestro entorno de RStudio.
+
+```{r}
+setwd("/Users/fernandolucasruiz/Library/CloudStorage/OneDrive-UNIVERSIDADDEMURCIA/Documentos/Fernando/Master Bioinformatica/Asignaturas/Bioestadistica/tareas/JuanaMari")
+```
+
+```{r, message=FALSE}
+data <- read_csv("pone.0187371.s002.csv")
+head(data)
+```
+
+# Análisis estadistico y limpieza de datos
+
+Extraemos los datos de las columnas 103 a la 113 uniendo la columna de clase a mis datos.
+
+Vemos que hay una diferencia muy grande en la expresion de las variables. Algunas variables tienen una pequeña discrepancia entre media y mediana por lo que podrían no ajustarse a una normal. Como era de esperar hay una n de 124 en todas las variables.
+
+```{r}
+data_flr <- data [,103:113]
+describe(data_flr)
+```
+
+```{r}
+boxplot(data_flr[,1:11], col = colorRampPalette(c(rgb(255, 136, 0, maxColorValue = 255),  
+                                  rgb(0, 94, 255, maxColorValue = 255)))(11))
+```
+
+Escalo los datos porque algunos valores entre variables son muy altos y otros muy bajos. De esta manera puedo comparar entre clases dentro de las variables y entre variables.
+
+Ordeno las varianzas de mayor a menor.
+
+```{r, message=F, warning=F}
+data_flr <- as.tibble(scale(data_flr, center = T))
+data_flr$class <- factor(data$Class)
+
+data_flr <- data.frame(data_flr[, order(apply(data_flr, 2, var), decreasing = T)])
+
+attach(data_flr)
+
+boxplot(data_flr[,1:11], col = colorRampPalette(c(rgb(255, 136, 0, maxColorValue = 255),  
+                                  rgb(0, 94, 255, maxColorValue = 255)))(11))
+```
+
+En esta tabla observamos los datos estadisticos descriptivos totales sin distinción de clase. Vemos que algunas variables tienen un skewness grande. Podría deberse a una diferncia de clase (Control y Autista)
+
+```{r}
+describe(data_flr[,1:11])
+```
+
+A continuación extraigo los datos estadisticos por clase (Control y Autismo) para ver si el skewness es debido a la clase.
+
+Se intuyen diferencias en las medias y medianas entre los dos grupos.
+
+En algunas variables se intuye que no son paramétricas debido a una diferencia entre media y mediana, además de un skewness distinto a cero. El caso más significativo es la variable 207084_at en los individuos autistas, que tiene un skewness alto y una Kurtosis alta por lo que tiene una distribucion platicúrtica.
+
+```{r}
+tapply(data_flr[,c(1:11)], data_flr$class, describe)
+```
+
+## Distribución
+
+Antes de ver las distribuciones de densidad, vamos a observar si hay ouliers que estén interfiriendo en los datos. Por ello creo boxplots para verlos. Observamos que en varios de estas variables existen valores ouliers.
+
+```{r}
+par(mfrow=c(2,3))
+for (i in 1:11) boxplot(data_flr[,i] ~ data_flr$class, xlab="", ylab = "", main = colnames(data_flr[i]), col = c("#F08080", "#4DD5F8"))
+```
+
+Decido reemplazar los outliers por los valores de su propia mediana mediante los argumentos fill = T, median = T. Tomo esta decisión porque no son muchas las variables y los valores en cada una de ellas.
+
+```{r}
+data_flr_filtered <- rm.outlier(data_flr[,1:11], fill = T, median = T)
+data_flr_filtered$class <- data_flr$class
+data_flr <- data_flr_filtered
+```
+
+Vemos que siguen apareciendo outliers en alguno de ellos. Tomo la decisión de seguir porque están muy cerca de los rangos intercuartílicos. La señalización de la mediana en algunos casos no se sitúa en el centro por lo que intuimos que la distribución de los valores en algunos casos es no paramétrica.
+
+```{r}
+par(mfrow=c(2,3))
+for (i in 1:11) boxplot(data_flr[,i] ~ data_flr$class, xlab="", ylab = "", main = colnames(data_flr[i]), col = c("#F08080", "#4DD5F8"))
+```
+
+Vemos la distribución de las variables según la clase. Intuimos que hay diferencia entre medias y medianas según la clase por que no se solapan entre ellas. En la mayoría de distribuciones, vemos que tiene bastante cola en ambas direcciones ocn una distribución platicúrtica.
+
+```{r}
+data_flr_gather <- data_flr %>%
+  gather(key = "text", value = "value", -class)
+
+p <- data_flr_gather %>%
+  mutate(text = fct_reorder(text, value)) %>%
+  ggplot( aes(x=value, color=class, fill=class)) +
+  geom_density(alpha=0.6)+
+  #geom_histogram(alpha=0.6, binwidth = 5) +
+  ylim(c(0, 1)) +
+  scale_fill_viridis(discrete=TRUE) +
+  scale_color_viridis(discrete=TRUE) +
+  theme_ipsum() +
+  theme(
+    legend.position="none",
+    panel.spacing = unit(0.1, "lines"),
+    strip.text.x = element_text(size = 8)
+  ) +
+  xlab("") +
+  labs(color = "Class") +
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(title = "Grupo", frame = TRUE)) +
+  facet_wrap(~text)
+
+p
+```
+
+## Contrastes
+
+Realizo un estudio para ver si las variables son paramétricas o no. Selecciono las variables que no son paramétricas para realizar el contraste de medias apropiado en cada variable. Realizamos el test lillie ya que son más de 50 valores en cada variable y clase. Diferencio los ensayos por Control y Autista. Las variables X1564876_s_at, X1563327_a_at y X231541_s_at devuelven un pvalor significativo con el test Lillie por lo que sus valores son no paramétricos. Estos datos los guardo en un vector para la comparación de medias o medianas siguiente.
+
+```{r}
+lista_noparametricos <- c()
+for (i in colnames(data_flr)){
+  if (i == "class") {
+    break
+  }
+  sp_control <- lillie.test(data_flr[[i]][data_flr$class == "Control"])
+  if (sp_control$p.value < 0.05){
+    print(paste("La variable", i , "en las muestras Control tiene datos no paramétricos"))
+    lista_noparametricos <- append(lista_noparametricos, i)
+  } 
+  sp_autism<- lillie.test(data_flr[[i]][data_flr$class == "Autism"])
+  if (sp_autism$p.value < 0.05){
+    print(paste("La variable", i , "en las muestras Autism tiene datos no paramétricos"))
+    lista_noparametricos <- append(lista_noparametricos, i)
+  } 
+}
+```
+
+En los qqplots podemos ver que las variables anteriormente predichas se alejan de la linea por lo que son no paramétricas. En el caso del Control X227618_at vemos que hay muchos valores que se dispersan pero realizando el test indidualmente da un pvalor de 0.1892. Con el test shapiro tampoco da significancia estadística.
+
+```{r}
+par(mfrow=c(2,3))
+for (i in 1:11) 
+  qqPlot(data_flr[,i][data_flr$class=="Control"], ylab= "", 
+         main = paste("Control\n", colnames(data_flr[i])))
+```
+
+```{r}
+par(mfrow=c(2,3))
+for (i in 1:11) 
+  qqPlot(data_flr[,i][data_flr$class=="Autism"], ylab= "", 
+         main = paste("Autism\n", colnames(data_flr[i]) ))
+```
+
+Con este bucle pretendo realizar test de contraste de medias o medianas si se da el caso de datos no paramétricos. En el caso de as variables no paramétricas realizo el test de U Mann-Witney.
+
+En el caso de los datos paramétricos, primero realizo contraste de varianzas para observar si hay las varianzas son iguales. En el caso de si el test de contraste de varianza lance un pvalor \< 0.05, realizamos el t.test con var.equal = F. Si no, con TRUE.
+
+Como vemos, todas las variables tiene una diferencia significativa entre los individuos Control y los individuos con Autismo.
+
+```{r}
+for (i in colnames(data_flr)){
+  if (i == "class") {
+    break
+  }
+  var_test <- var.test(data_flr[[i]] ~ data_flr$class)
+  
+  if (i %in% lista_noparametricos){
+    wilcox_test <-  wilcox.test(data_flr[[i]] ~ data_flr$class)
+    if (wilcox_test$p.value < 0.05){
+      print(paste("U Mann-Witney test significativo de", 
+                  i, "con un pvalor de:", round(wilcox_test$p.value, 6)))
+    }
+  } else {
+    if (var_test$p.value < 0.05){
+      t_test <-  t.test(data_flr[[i]] ~ data_flr$class, var.equal = F)
+      if (t_test$p.value < 0.05){
+        print(paste("T test significativo (varianzas desiguales) de",
+                    i, "con un pvalor de:", round(t_test$p.value, 6)))
+      }
+    } else {
+      t_test <-  t.test(data_flr[[i]] ~ data_flr$class, var.equal = T)
+      if (t_test$p.value < 0.05){
+        print(paste("T test significativo (varianzas iguales) de",
+                    i, "con un pvalor de:", round(t_test$p.value, 6)))
+      }
+    }
+  }
+}
+```
+
+## Análisis de componentes principales
+
+En primer lugar realizamos un estudio de correlación para ver si las variables se correlacionan entre si. En primer lugra mostramos la tabla con las correlaciones entre variables. En segundo lugar un plot que muestra el nivel de correlacion en la parte superior y unas elipses que muestra el nivel de correlación (más o menos eliptica) que existe entre esas dos variables y si es negativa o positiva dicha correlación según la direccion de la elipse.
+
+Por ultimo, vemos la relación positiva o negativa de las variables.
+
+En resumen, vemos que en la mayoría de pares de variables hay correlación entre ellas.
+
+```{r}
+data.frame(round(cor(data_flr[,1:11]), 2))
+```
+
+```{r}
+corrplot.mixed(cor(data_flr[,1:11]), lower="ellipse", upper="number")
+```
+
+```{r, message=F}
+network_plot(correlate(data_flr[,1:11]))
+```
+
+Para contrastar si nuestros datos son adecuados para hacer el analisis de componentes principales hay que pasar el test de esferecidad de Bartlett y el test de Kaiser-Meyer-Olkin.
+
+En ambos tests rechazamos la hipotesis nula por lo que nuestros datos son adecuados para realizar el ACP. Además el test KMO nos da un criterio de 0.77 que es un criterio alto de adecuación para el ACP.
+
+```{r}
+bart_spher(data_flr[,1:11])
+
+KMOS(data_flr[,1:11])
+```
+
+El siguiente paso es realizar el análisis per se de los componentes principales de nuestros datos. Para ello escogemos 11 componentes ya que tenemos 11 variables.
+
+En los datos podemos estadisticos podemos ver que seguramente escojamos 3 componentes ya que el cuarto componente tiene menos de 1 varianza en su componente. No llega al 80 % de las variables pero tenemos que trabajar con los datos que mejor nos convengan. Entre las 3 componentes recogemos el 57.8 de las varianza, como vemos en los datos y la gráfica screeplot.
+
+En estos datos podemos la contribución de individuos y variables en las sucesivas componentes principales. Más adelante entraremos en profundidad en cada uno de ellos.
+
+```{r}
+data_flr.pca <- PCA(data_flr, scale.unit=T, ncp=11, graph=F, quali.sup = 12 )
+
+summary(data_flr.pca)
+```
+
+```{r}
+fviz_screeplot(data_flr.pca, addlabels = T, ylim = c(0,40), barfill = "dodgerblue3", linecolor = "#F08080")
+```
+
+### Estudio variables
+
+En primer lugar vamos a estudiar el papel de las variables en las componentes principales.
+
+En la gráfica inferior podemos ver las coordenadas de las variables en las componentes principales 1 y 2. Vemos que X225363_at y X212864_at tienen un alto grado de contribución para ambas componentes ya que se situa en los 45º con respecto a las dos dimensiones.
+
+```{r}
+fviz_pca_var(data_flr.pca, col.var="contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE
+             )
+fviz_pca_var(data_flr.pca, col.var="contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE,
+             axes= c(1,3)
+             )
+```
+
+En esta gráfica podemos ver el grado de contribución de cada variable por componente principal. Como he dicho anteriormente, estudio los 3 primeros componentes. Como hemos visto en el mapa anterior, se corrobora que X225363_at y X212864_at tienen un alto grado de contribución en las dos primeras componentes pero no en la tercera componente. En cambio, la tercera componente viene marcada por la contribucion de X215372_x_at.
+
+```{r}
+fviz_contrib(data_flr.pca, choice = "var", axes = 1, top = 11, barfill = "dodgerblue3",)
+fviz_contrib(data_flr.pca, choice = "var", axes = 2, top = 11, barfill = "dodgerblue3",)
+fviz_contrib(data_flr.pca, choice = "var", axes = 3, top = 11, barfill = "dodgerblue3",)
+
+```
+
+### Individuos
+
+Como vemos en la gráfica, los individuos presentes en la zona donde se cortan los ejes tienen una contribución muy baja en estas componentes principales.
+
+Por otro lado, tenemos un alto grado de contribución del individuo 80 (izquierda eje X) en la componente 1 o el individuo 46 en la componente 2.
+
+En la gráfica de barras se muestra la contribución de cada individuo en cada componente. A modo de resumen, el individuo 80 es el que más contribuye a la componente 1, el individuo 21 a la componente 2 y el individuo 69 a la componente 3.
+
+```{r}
+fviz_pca_ind(data_flr.pca, col.ind = "cos2",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE
+             )
+fviz_pca_ind(data_flr.pca, col.ind = "cos2",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE,
+             axes = c(1,3)
+             )
+```
+
+```{r}
+fviz_contrib(data_flr.pca, choice = "ind", axes = 1, top = 50, barfill = "dodgerblue3",)
+fviz_contrib(data_flr.pca, choice = "ind", axes = 2, top = 50, barfill = "dodgerblue3",)
+fviz_contrib(data_flr.pca, choice = "ind", axes = 3, top = 50, barfill = "dodgerblue3",)
+```
+
+### Conjunto
+
+En estas gráficas mostramos el overlapping de individuos y variables.
+
+Podemos decir que hay mucho overlap entre la distribución de individuos controles y autistas, pero parece que algunas variables influyen más en los individuos autistas y otros más en los controles.
+
+Por ejemplo X215372_x_at parece ser que tiene que ver con los individuos autistas ya que se situa a la izquierda de la componente 1. En cambio, X208901_s_at está más presente en controles.
+
+```{r}
+fviz_pca_biplot(data_flr.pca, col.ind = class, habillage = data_flr$class, addEllipses = T)
+fviz_pca_biplot(data_flr.pca, col.ind = class, habillage = data_flr$class, addEllipses = T, axes = c(1,3))
+```
+
+### Elección de componentes principales
+
+El resultado optimo del número óptimo de componentes principales es 2, pero voy a escoger 3 componentes principales porque considero que hay pocos datos para seguir hacia delante con el ensayos de clusterización. También lo haré sin reducción para ver si mejora la jerarquización.
+
+```{r}
+dim_data_flr <- nrow(data_flr)
+
+ev <- eigen(cor(data_flr[,1:11]))
+ap <- parallel(subject=dim_data_flr,var=ncol(data_flr[,1:11]),rep=100,cent=.95)
+nS <- nScree(ev$values, ap$eigen$qevpea)
+vp <- min(nS$Components) + 1
+print(paste("El número idoneo de componentes principales es", vp))
+```
+
+```{r}
+data_flr.comp <- data_flr.pca$ind$coord[,1:3]
+```
+
+# Análisis jerárquico
+
+Vamos a realizar el ensayo para una jerarquización no supervisado de los datos.
+
+En primer lugar hacemos la matriz de los datos compilados por componentes principales del ensayo anterior y de los datos totales.
+
+```{r, warning=FALSE}
+dist_data_flr <- dist(data_flr)
+dist_data_flr.comp <- dist(data_flr.comp)
+```
+
+Ahora realizamos la clusterización mediante 5 métodos de enlace como son completo, simple, mediante el promedio, centroide o mediante enlace Ward.
+
+Podemos ver que el método de enlace con mejor puntuación en el caso de todas las variables es el que mide la clusterización mediante la media con 0.58.
+
+```{r}
+hclust_data_flr_complete <- hclust(dist_data_flr, method = "complete")
+hclust_data_flr_avg <- hclust(dist_data_flr, method = "average")
+hclust_data_flr_single <- hclust(dist_data_flr, method = "single")
+hclust_data_flr_centroid <- hclust(dist_data_flr, method = "centroid")
+hclust_data_flr_ward <- hclust(dist_data_flr, method = "ward.D")
+
+complete <- cor(dist_data_flr.comp, cophenetic(hclust_data_flr_complete))
+average <- cor(dist_data_flr.comp, cophenetic(hclust_data_flr_avg))
+single <- cor(dist_data_flr.comp, cophenetic(hclust_data_flr_single))
+centroid <- cor(dist_data_flr.comp, cophenetic(hclust_data_flr_centroid))
+ward <- cor(dist_data_flr.comp, cophenetic(hclust_data_flr_ward))
+
+best <- data.frame(complete, single, centroid, average, ward)
+
+round(best, 2)
+```
+
+Podemos ver que el método de enlace con mejor puntuación en el caso de los variables compiladas es el que mide la clusterización mediante la media. La compilación mejora el grado de bondad del clusterización.
+
+```{r}
+hclust_data_flr_complete.comp <- hclust(dist_data_flr.comp, method = "complete")
+hclust_data_flr_avg.comp <- hclust(dist_data_flr.comp, method = "average")
+hclust_data_flr_single.comp <- hclust(dist_data_flr.comp, method = "single")
+hclust_data_flr_centroid.comp <- hclust(dist_data_flr.comp, method = "centroid")
+hclust_data_flr_ward.comp <- hclust(dist_data_flr.comp, method = "ward.D")
+
+complete <- cor(dist_data_flr.comp, cophenetic(hclust_data_flr_complete.comp))
+average <- cor(dist_data_flr.comp, cophenetic(hclust_data_flr_avg.comp))
+single <- cor(dist_data_flr.comp, cophenetic(hclust_data_flr_single.comp))
+centroid <- cor(dist_data_flr.comp, cophenetic(hclust_data_flr_centroid.comp))
+ward <- cor(dist_data_flr.comp, cophenetic(hclust_data_flr_ward.comp))
+
+best <- data.frame(complete, single, centroid, average, ward)
+
+round(best, 2)
+```
+
+Buscando el número de clusters generados, podemos ver que tanto en los datos completos como en los datos compilados según componentes principales, vemos que se generan 3 clusters. En las tablas vemos que la discrepancias aparece en los clusters 2 y 3 pero en el 1 son iguales en los dos datos
+
+```{r}
+hcpc <- HCPC(data_flr[,1:11], nb.clust=-1, method="average", graph = F)
+table <- table(hcpc$data.clust$clust)
+names(table) <- c("Cluster 1", "Cluster 2", "Cluster 3")
+table
+
+# con el analisis PCA con los 3 componentes principales
+hcpc.comp <- HCPC(as.data.frame(data_flr.comp), nb.clust=-1, method="average", graph = F)
+table <- table(hcpc.comp$data.clust$clust)
+names(table) <- c("Cluster 1", "Cluster 2", "Cluster 3")
+table
+```
+
+Estudiando el dendograma con los datos completos, vemos que hay dos clusters muy grandes y otro pequeño de solamente dos individuos. Debido a que son datos con pocas variables, y como hemos visto en los mapas del análisis de componentes principales no podemos decir que haya una distribución clara de los indviduos control y autistas. Como vemos en el dendograma, los individuos de la izquierda (azul y rojo) hay más concentración de individuos Control (naranja en la barra). En cambio los individuos de la derecha del dendograma (verde oscuro) hay una mayor concentración de individuos Autistas (verde claro).
+
+```{r, warning= F}
+dend <- as.dendrogram(hclust_data_flr_avg)
+
+dend %>% 
+  set("labels_col", "orange") %>% set("labels_cex", 0.6) %>%
+  set("labels_col", value = c("skyblue",  "#FC4E07", "forestgreen"), k=3) %>%
+  set("branches_k_color", value = c("skyblue",  "#FC4E07", "forestgreen"), k = 3) %>%
+  set("leaves_pch", 19)  %>%
+  set("leaves_cex", 0.1) %>%
+  plot(axes=FALSE, main = "Average dendogram")
+
+
+my_colors <- ifelse(data_flr$class=="Control", "orange", "green")
+colored_bars(colors = my_colors, dend = dend, rowLabels = "Class")
+
+fviz_cluster(hcpc, main = "Cluster datos completos average clust", palette = c("skyblue",  "#FC4E07", "forestgreen"))
+
+```
+
+Estudiando el dendograma con los datos compilados en componentes principales, que ocurre el mismo fenómeno pero se intuye mejor separación que los datos anteriores. Ahora las ramas azules a la izquierda del dendograma tiene una mayor concentración de individuos Autistas (barra naranja). A la derecha se concentran más los individuos Control (barras naranjas).
+
+```{r, warning= F}
+dend <- as.dendrogram(hclust_data_flr_avg.comp)
+
+dend %>% 
+  set("labels_col", "orange") %>% set("labels_cex", 0.6) %>%
+  set("labels_col", value = c("skyblue",  "#FC4E07", "forestgreen"), k=3) %>%
+  set("branches_k_color", value = c("skyblue",  "#FC4E07", "forestgreen"), k = 3) %>%
+  set("leaves_pch", 19)  %>%
+  set("leaves_cex", 0.1) %>%
+  plot(axes=FALSE, main = "Average dendogram")
+
+
+my_colors <- ifelse(data_flr$class=="Control", "orange", "green")
+colored_bars(colors = my_colors, dend = dend, rowLabels = "Class")
+
+fviz_cluster(hcpc.comp, main = "Cluster datos completos average clust", palette = c("skyblue",  "#FC4E07", "forestgreen"))
+```
+
+En el mapa de calor para jerarquizar tanto indviduos como variables de los datos totales, vemos que se pueden intuir en este caso dos componentes principales de variables. Las variables de la derecha se expresarian mas en autistas.
+
+```{r}
+heatmap.2(as.matrix(data_flr[,-12]), trace="none",labRow = class)
+```
+
+```{r}
+heatmap.2(as.matrix(data_flr.comp), trace="none",labRow = class)
+```
+
+# Cluster no jerárquico: K-medias
+
+Vamos a realizar la clusterizacion de los individuos mediante la técnica de Kmeans en los datos completos y en los datos compilados. Los clusters elegidos son 3.
+
+El resultado de la clusterización de los datos completos da una bondad del 31.6% que no es muy buena. En el caso de los datos compilados, la bondad sube hasta un 52.2%.
+
+```{r}
+set.seed(12345)
+options(width=3000)
+
+km <- kmeans(data_flr[,1:11], 3, iter.max = 1000, nstart = 25)
+km
+fviz_cluster(km, data_flr[,1:11])
+```
+
+```{r}
+set.seed(12345)
+options(width=3000)
+
+km.comp <- kmeans(data_flr.comp, 3, iter.max = 1000, nstart = 25)
+km.comp
+fviz_cluster(km.comp, data_flr.comp)
+```
+
+Con respecto al número de individuos presentes en cada cluster vemos que hay diferencia entre utilizar los datos completos o compilados. En cambio, los datos compilados distingue los mismos clusters que el método jerarquico, ya que si recordamos, los valores eran los mismos (39, 49, 45).
+
+```{r}
+table <- table(km$cluster)
+names(table) <- c("Cluster 1", "Cluster 2", "Cluster 3")
+table
+```
+
+```{r}
+table <- table(km.comp$cluster)
+names(table) <- c("Cluster 1", "Cluster 2", "Cluster 3")
+table
+```
+
+Si clasificamos los individuos según la class en cada conglomerado vemos que el primero es básicamente individuos Control, el segundo individuos con Autismo y el tercio una mezcla.
+
+```{r}
+lapply(1:3, function(nc) data_flr$class[km$cluster == nc])
+```
+
+En el caso de los datos compilados podemos ver el mismo patrón pero con la salvedad que en este caso el cluster 1 hay una mayoria de individuos autistas y el cluster 2 controles.
+
+```{r}
+lapply(1:3, function(nc) data_flr$class[km.comp$cluster == nc])
+```
+
+Al realizar los mapas de los conglomerados, vemos que los datos totales no separan del todo bien los conglomerados.
+
+```{r}
+set.seed(12345)
+kmed <- pam(dist_data_flr, k =3, diss= T)
+plot(kmed, which.plots = 1, main = "kmed datos totales")
+plot(kmed, main = "Silhouette datos totales")
+```
+
+En cambio en el mapa de los datos compilados se aprecia una mejor separación entre conglomerados. Además tiene menos datos negativos en el analisis Silhoutte que interfieren en clusterizacion de forma negativa.
+
+```{r}
+set.seed(12345)
+kmed <- pam(dist_data_flr.comp, k =3, diss= T)
+plot(kmed, which.plots = 1, main = "kmed datos compilados")
+plot(kmed, main = "Silhouette datos compilados")
+```
+
+Cuando revisamos los escalamientos multidimensionales, no observamos una mejora en los datos totales y en los datos compilados.
+
+```{r}
+plot(data_flr.pca$ind$coord, col = km$cluster, xlab = "components 1", ylab = "components 2", pch = 19, main = "No escalado", frame.plot = F, ylim = c(-5, 5))
+abline(v = 0, h = 0, lty = 2)
+
+
+mds.data_flr <- cmdscale(dist_data_flr, k = 3, eig = T)
+plot(mds.data_flr$points, col = km$cluster, xlab = "components 1", ylab = "components 2", pch = 19, main = "metrico", frame.plot = F, ylim = c(-5, 5))
+abline(v = 0, h = 0, lty = 2)
+
+
+mds.data_flr <- isoMDS(dist_data_flr)
+plot(mds.data_flr$points, col =km$cluster, xlab = "components 1", ylab = "components 2", pch = 19, main = "no metrico", frame.plot = F)
+abline(v = 0, h = 0, lty = 2)
+```
+
+Vemos que el escalado multiple no beneficia la separacion de individuos.
+
+```{r}
+plot(data_flr.pca$ind$coord, col = km.comp$cluster, xlab = "components 1", ylab = "components 2", pch = 19, main = "No escalado", frame.plot = F)
+abline(v = 0, h = 0, lty = 2)
+
+
+mds.data_flr <- cmdscale(dist_data_flr.comp, k = 3, eig = T)
+plot(mds.data_flr$points, col = km.comp$cluster, xlab = "components 1", ylab = "components 2", pch = 19, main = "metrico", frame.plot = F)
+abline(v = 0, h = 0, lty = 2)
+
+
+mds.data_flr <- isoMDS(dist_data_flr.comp)
+plot(mds.data_flr$points, col =km.comp$cluster, xlab = "components 1", ylab = "components 2", pch = 19, main = "no metrico", frame.plot = F)
+abline(v = 0, h = 0, lty = 2)
+```
